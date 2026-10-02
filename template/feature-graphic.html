@@ -1,0 +1,103 @@
+<!doctype html>
+<!--
+  Google Play feature graphic, 1024x500, one per language: feature-graphic.html?lang=de
+  Opens from disk; export-fg.cjs renders it to PNG. The tagline is the first store
+  screenshot's headline (copy.js); the app name, icon and the two Android screens come from
+  config.js. The centre stays clear: Play draws its play button there once the listing has a video.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Feature graphic</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,600;1,9..144,600&family=Noto+Serif+JP:wght@600&family=Noto+Serif+KR:wght@600&display=block" rel="stylesheet">
+<script src="config.js"></script>
+<script src="copy.js"></script>
+<style>
+  :root {
+    --text: #3A2A1F;
+    --accent: #C46F3F;
+    --serif: "Fraunces", serif;
+  }
+  :root[lang="ja"] { --serif: "Noto Serif JP", serif; }
+  :root[lang="ko"] { --serif: "Noto Serif KR", serif; }
+  html, body { margin: 0; width: 1024px; height: 500px; overflow: hidden; background: #FDF6EC; }
+  .fg {
+    position: relative; width: 1024px; height: 500px; overflow: hidden;
+    background: linear-gradient(115deg, #FFF4E8 0%, #FFE8D4 48%, #FBE1D6 100%);
+  }
+  .blob { position: absolute; border-radius: 50%; filter: blur(46px); pointer-events: none; }
+  .copy {
+    position: absolute; left: 64px; top: 0; bottom: 0; width: 390px;
+    display: flex; flex-direction: column; justify-content: center;
+  }
+  .brand { display: flex; align-items: center; gap: 16px; margin-bottom: 26px; }
+  .brand img { width: 68px; height: 68px; border-radius: 16px; box-shadow: 0 6px 18px rgba(58, 42, 31, 0.18); }
+  .brand span { font-family: "Fraunces", serif; font-weight: 600; font-size: 32px; color: var(--text); letter-spacing: -0.3px; }
+  .tag {
+    font-family: var(--serif); font-weight: 600; font-size: 54px; line-height: 1.05;
+    color: var(--text); letter-spacing: -0.6px; text-wrap: balance; margin: 0;
+  }
+  :root[lang="ja"] .tag, :root[lang="ko"] .tag { line-height: 1.3; letter-spacing: 0; }
+  :root[lang="ja"] .tag { word-break: auto-phrase; }
+  :root[lang="ko"] .tag { word-break: keep-all; }
+  .tag em { color: var(--accent); font-style: italic; }
+  :root[lang="ja"] .tag em, :root[lang="ko"] .tag em { font-style: normal; }
+  .phone {
+    position: absolute; width: 186px; aspect-ratio: 1280 / 2856;
+    border: 7px solid #2B2523; border-radius: 30px; overflow: hidden; background: #000;
+    box-shadow: 0 24px 50px rgba(58, 42, 31, 0.28), 0 4px 10px rgba(58, 42, 31, 0.12);
+  }
+  .phone img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .back { left: 632px; top: 92px; transform: rotate(-7deg); }
+  .front { left: 790px; top: 58px; transform: rotate(5deg); }
+</style>
+</head>
+<body>
+<div class="fg">
+  <div class="blob" style="left:-90px; top:-120px; width:360px; height:360px; background:#F2BFB1; opacity:.45"></div>
+  <div class="blob" style="left:600px; top:200px; width:420px; height:420px; background:#E7F0EA; opacity:.9"></div>
+  <div class="blob" style="left:860px; top:-140px; width:300px; height:300px; background:#F7D6A0; opacity:.55"></div>
+
+  <div class="copy">
+    <div class="brand"><img id="icon" alt=""><span id="app"></span></div>
+    <p class="tag" id="tag"></p>
+  </div>
+
+  <div class="phone back"><img id="shotBack" alt=""></div>
+  <div class="phone front"><img id="shotFront" alt=""></div>
+</div>
+<script>
+  const CONFIG = window.STORE_CONFIG;
+  const lang = new URLSearchParams(location.search).get("lang") || "en";
+  const TAGLINES = Object.fromEntries(Object.entries(window.STORE_COPY).map(([l, c]) => [l, c[0].h.replace(/[​ ]/g, (m) => m === " " ? " " : "")]));
+  document.documentElement.lang = lang;
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  document.getElementById("icon").src = CONFIG.icon;
+  document.getElementById("app").textContent = CONFIG.app;
+  const tag = document.getElementById("tag");
+  // Break before the accent half so it gets its own line ("Overthinking,<br>untangled.").
+  tag.innerHTML = esc(TAGLINES[lang] || TAGLINES.en)
+    .replace(/\s*\*([^*]+)\*/, "<br><em>$1</em>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  const shot = (file) => CONFIG.shots.replace("{platform}", CONFIG.platforms.android).replace("{lang}", lang).replace("{file}", file);
+  document.getElementById("shotBack").src = shot(CONFIG.featureScreens.back);
+  document.getElementById("shotFront").src = shot(CONFIG.featureScreens.front);
+
+  // Shrink the tagline until it fits three lines inside the copy column.
+  async function fit() {
+    await document.fonts.ready;
+    let size = parseFloat(getComputedStyle(tag).fontSize);
+    const lh = () => parseFloat(getComputedStyle(tag).lineHeight);
+    while (size > 30 && tag.getBoundingClientRect().height > lh() * 3 + 1) {
+      size -= 2;
+      tag.style.fontSize = size + "px";
+    }
+    await Promise.all([...document.images].map((i) => i.complete ? null : new Promise((r) => { i.onload = i.onerror = r; })));
+    document.body.dataset.ready = "1";
+  }
+  fit();
+</script>
+</body>
+</html>

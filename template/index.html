@@ -1,0 +1,473 @@
+<!doctype html>
+<!--
+  Store screenshots drawn by hand as one strip (the store-shots skill).
+  All six screenshots of one device sit side by side on one canvas, so the background and the
+  thread that runs through them continue from one screenshot into the next; export.cjs clips
+  each panel out at the store size.
+
+    index.html?lang=en&device=ios        App Store 6.9"   6 x 1320x2868
+    index.html?lang=en&device=android    Play phone       6 x 1080x1920
+    index.html?lang=en&device=tablet     Play tablet 10"  6 x 1440x2560 (7" is this, scaled to 1080x1920)
+    &layout=tilt                         phones tilted, cropped only by the bottom edge, captions
+                                         alternating top/bottom (default: upright)
+    &fit=1                               shrink the whole strip to the window, for looking at it
+
+  Product settings (screens, icon, mascot, palette) are in config.js, captions in copy.js.
+  Fonts and the ink/accent colours are in the <style> below.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Store screenshots</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,600;1,9..144,600&family=Nunito:wght@600;700&family=Noto+Serif+JP:wght@600&family=Noto+Sans+JP:wght@500;700&family=Noto+Serif+KR:wght@600&family=Noto+Sans+KR:wght@500;700&display=block" rel="stylesheet">
+<script src="config.js"></script>
+<script src="copy.js"></script>
+<style>
+  :root {
+    --ink: #3A2A1F;
+    --ink-soft: #6E5646;
+    --ink-faint: #8C7363;
+    --accent: #C46F3F;
+    --thread: #C46F3F;
+    --serif: "Fraunces", serif;
+    --sans: "Nunito", sans-serif;
+  }
+  :root[lang="ja"] { --serif: "Noto Serif JP", serif; --sans: "Noto Sans JP", sans-serif; }
+  :root[lang="ko"] { --serif: "Noto Serif KR", serif; --sans: "Noto Sans KR", sans-serif; }
+  html, body { margin: 0; background: #FCF4EA; }
+  body { overflow: hidden; }
+  #strip { position: relative; transform-origin: 0 0; overflow: hidden; }
+
+  /* background: one wash across the whole strip, soft blobs over the panel joins, paper grain */
+  #wash, #blobs, #grain, #thread, #devices { position: absolute; left: 0; top: 0; pointer-events: none; }
+  .blob { position: absolute; border-radius: 50%; }
+  #grain { mix-blend-mode: multiply; opacity: .5; }
+  #thread { overflow: visible; }
+
+  .panel { position: absolute; top: 0; }
+  .copy { position: absolute; color: var(--ink); }
+  .hl {
+    margin: 0; font-family: var(--serif); font-weight: 600; letter-spacing: -0.012em;
+    line-height: 1.02; text-wrap: balance; font-variation-settings: "opsz" 144;
+  }
+  .hl .acc { color: var(--accent); font-style: italic; }
+  .sub { margin: 0; font-family: var(--sans); font-weight: 600; color: var(--ink-soft); line-height: 1.3; text-wrap: balance; }
+  .fine { position: absolute; margin: 0; font-family: var(--sans); font-weight: 600; color: var(--ink-faint); line-height: 1.35; text-align: center; text-wrap: balance; }
+  :root[lang="ja"] .hl, :root[lang="ko"] .hl { line-height: 1.28; letter-spacing: 0; }
+  :root[lang="ja"] .hl .acc, :root[lang="ko"] .hl .acc { font-style: normal; }
+  :root[lang="ja"] .copy, :root[lang="ja"] .fine { word-break: auto-phrase; }
+  :root[lang="ja"] .hl { word-break: keep-all; } /* breaks only at the U+200B hints in copy.js */
+  :root[lang="ko"] .copy, :root[lang="ko"] .fine { word-break: keep-all; }
+  .w { white-space: nowrap; }
+
+  .device { position: absolute; background: #1E1916; }
+  .device img { position: absolute; display: block; }
+  .device::after { /* a hairline of light on the rim */
+    content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    box-shadow: inset 0 0 0 2px rgba(255, 255, 255, .10);
+  }
+  .icon { position: absolute; display: block; }
+  .mascot { position: absolute; display: block; filter: drop-shadow(0 8px 14px rgba(74, 46, 28, .14)); }
+</style>
+</head>
+<body>
+<div id="strip">
+  <div id="wash"></div>
+  <div id="blobs"></div>
+  <svg id="grain"></svg>
+  <svg id="thread"></svg>
+  <div id="devices"></div>
+</div>
+<script>
+const CONFIG = window.STORE_CONFIG;
+const Q = new URLSearchParams(location.search);
+const LANG = Q.get("lang") || "en";
+const DEVICE = Q.get("device") || "ios";
+const LAYOUT = Q.get("layout") || "upright";
+const COPY = (window.STORE_COPY[LANG] || window.STORE_COPY.en);
+const CJK = (CONFIG.cjk || []).includes(LANG);
+document.documentElement.lang = LANG;
+
+const shot = (file) => CONFIG.shots.replace("{platform}", CONFIG.platforms[DEVICE]).replace("{lang}", LANG).replace("{file}", file);
+// One screen per panel; the closing panel has no device.
+const SCREENS = CONFIG.screens;
+
+// Geometry per device. Everything else is a fraction of the panel width W.
+const SPEC = {
+  ios:     { W: 1320, H: 2868, sw: 1320, sh: 2868, dev: 0.69, devTop: 0.315, rim: 0.026, radius: 0.142, hl: 0.10, top: 0.055 },
+  android: { W: 1080, H: 1920, sw: 1280, sh: 2856, dev: 0.585, devTop: 0.29, rim: 0.026, radius: 0.10, hl: 0.088, top: 0.058 },
+  // Play wants 9:16 for tablets too (featuring eligibility), so the canvas is 1440x2560 and the
+  // 7" set is this scaled to 1080x1920; the tablet screen itself keeps its 5:8 capture.
+  tablet:  { W: 1440, H: 2560, sw: 1600, sh: 2560, dev: 0.74, devTop: 0.262, rim: 0.022, radius: 0.05, hl: 0.082, top: 0.05 },
+}[DEVICE];
+const { W, H } = SPEC;
+const N = 6;
+// The tilt layout, per panel: caption at the top or bottom, the phone's rotation, its width as
+// a fraction of W, its centre x, and the y of its highest corner. The tilt eases to upright
+// across the set.
+const TILT = {
+  ios: [
+    { cap: "top", rot: -8, s: 0.82, cx: 0.50, top: 0.335 },
+    { cap: "top", rot: 6, s: 0.80, cx: 0.52, top: 0.35 },
+    { cap: "bottom", rot: -5, s: 0.68, cx: 0.50, top: 0.035 },
+    { cap: "top", rot: 4, s: 0.80, cx: 0.50, top: 0.345 },
+    { cap: "bottom", rot: -2.5, s: 0.68, cx: 0.50, top: 0.035 },
+    null,
+  ],
+  // the Play canvas is 9:16, so the phones are narrower to leave room for the lower captions
+  android: [
+    { cap: "top", rot: -8, s: 0.74, cx: 0.50, top: 0.36 },
+    { cap: "top", rot: 6, s: 0.70, cx: 0.52, top: 0.37 },
+    { cap: "bottom", rot: -5, s: 0.53, cx: 0.50, top: 0.03 },
+    { cap: "top", rot: 4, s: 0.70, cx: 0.50, top: 0.365 },
+    { cap: "bottom", rot: -2.5, s: 0.53, cx: 0.50, top: 0.03 },
+    null,
+  ],
+};
+TILT.tablet = TILT.ios;
+const TILTS = TILT[DEVICE];
+// Mascot per panel (config.js): "lane" sits on the thread right of centre, "caption" beside a
+// bottom caption, "ring" is the closing panel inside the thread's ring.
+const MASCOT = CONFIG.mascot ? CONFIG.mascot[LAYOUT === "tilt" ? "tilt" : "upright"] : Array(N).fill(null);
+const mascotImg = (parent, m, size) => {
+  const img = el("img", "mascot", parent);
+  img.src = CONFIG.mascot.file.replace("{mood}", m.mood);
+  Object.assign(img.style, { width: size + "px", height: size + "px" });
+  return img;
+};
+const MX = Math.round(W * 0.083);                    // side margin
+const strip = document.getElementById("strip");
+strip.style.width = W * N + "px";
+strip.style.height = H + "px";
+
+const TINT = CONFIG.tint;
+const BLOB = CONFIG.blob;
+
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+const el = (tag, cls, parent) => { const e = document.createElement(tag); if (cls) e.className = cls; parent && parent.appendChild(e); return e; };
+
+// "*accent*" -> accent span. Latin scripts keep each word unbreakable so punctuation stays on
+// its word; Japanese and Korean leave line breaking to word-break.
+function rich(str) {
+  if (CJK) return esc(str).replace(/\*([^*]+)\*/g, '<span class="acc">$1</span>');
+  let acc = false;
+  return str.split(/( +)/).map((part) => {
+    if (/^ +$/.test(part)) return " ";
+    let html = "";
+    for (const seg of part.split("*")) { if (seg) html += acc ? `<span class="acc">${esc(seg)}</span>` : esc(seg); acc = !acc; }
+    acc = !acc; // split() toggled once too often after the last segment
+    return `<span class="w">${html}</span>`;
+  }).join("");
+}
+const lines = (s) => s.split("\n").map(rich).join("<br>");
+
+// ---------------------------------------------------------------- background
+(function background() {
+  const wash = $("#wash");
+  wash.style.width = W * N + "px"; wash.style.height = H + "px";
+  wash.style.background = `linear-gradient(90deg, ${TINT.map((c, i) => `${c} ${((i + 0.5) / N * 100).toFixed(2)}%`).join(", ")})`;
+  const blobs = $("#blobs");
+  for (const [x, y, r, c, o] of BLOB) {
+    const b = el("div", "blob", blobs);
+    const d = r * W;
+    Object.assign(b.style, { left: x * W - d / 2 + "px", top: y * H - d / 2 + "px", width: d + "px", height: d + "px",
+      background: `radial-gradient(circle, ${c} 0%, ${c}00 70%)`, opacity: o });
+  }
+  const g = $("#grain");
+  g.setAttribute("width", W * N); g.setAttribute("height", H);
+  g.innerHTML = `<filter id="n"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" stitchTiles="stitch"/>
+    <feColorMatrix values="0 0 0 0 .45  0 0 0 0 .35  0 0 0 0 .28  0 0 0 .55 0"/></filter>
+    <rect width="100%" height="100%" filter="url(#n)" opacity=".22"/>`;
+})();
+
+// ---------------------------------------------------------------- panels
+const panels = [];
+for (let i = 0; i < N; i++) {
+  const p = el("div", "panel", strip);
+  Object.assign(p.style, { left: i * W + "px", width: W + "px", height: H + "px" });
+  panels.push(p);
+}
+
+const HL = Math.round(W * SPEC.hl * (CJK ? 0.85 : 1)); // CJK glyphs are wider per character
+const SUB = Math.round(W * (DEVICE === "tablet" ? 0.031 : 0.038));
+const devW = Math.round(W * SPEC.dev);
+const rim = Math.round(devW * SPEC.rim);
+const scrW = devW - 2 * rim;
+const scrH = Math.round(scrW * SPEC.sh / SPEC.sw);
+const devH = scrH + 2 * rim;
+const devTop = Math.round(H * SPEC.devTop);
+const copyTop = Math.round(H * SPEC.top);
+
+// Phone geometry for a width dw: rim, screen and radius all scale with it.
+function phone(screen, dw) {
+  const rim = Math.round(dw * SPEC.rim), sw = dw - 2 * rim, sh = Math.round(sw * SPEC.sh / SPEC.sw);
+  const r = Math.round(dw * SPEC.radius);
+  const d = el("div", "device", $("#devices"));
+  Object.assign(d.style, {
+    width: dw + "px", height: sh + 2 * rim + "px", borderRadius: r + "px",
+    boxShadow: `0 ${W * .045}px ${W * .09}px rgba(74, 46, 28, .22), 0 ${W * .008}px ${W * .02}px rgba(74, 46, 28, .16)`,
+  });
+  const img = el("img", "", d);
+  img.src = shot(screen);
+  Object.assign(img.style, { left: rim + "px", top: rim + "px", width: sw + "px", height: sh + "px", borderRadius: r - rim + "px" });
+  return { d, w: dw, h: sh + 2 * rim };
+}
+
+// Upright: centred, fixed top. Returns the phone's bounding box in strip px.
+function device(i, screen) {
+  const t = LAYOUT === "tilt" ? TILTS[i] : null;
+  if (!t) {
+    const { d } = phone(screen, devW);
+    Object.assign(d.style, { left: i * W + (W - devW) / 2 + "px", top: devTop + "px" });
+    const left = i * W + (W - devW) / 2;
+    return { top: devTop, bottom: devTop + devH, left, right: left + devW, topEdge: [[left, devTop], [left + devW, devTop]] };
+  }
+  // Nothing but the thread may cross a cut: the part of the phone inside the panel's height
+  // must also sit inside its width (a 1.5% margin), so the phone shrinks until it does and
+  // is then centred on t.cx as far as the margin allows. Only the bottom edge crops it.
+  const rad = t.rot * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+  const margin = W * 0.015;
+  const extent = (w, h) => {
+    const bh = h * Math.abs(cos) + w * Math.abs(sin);
+    const cy = t.top * H + bh / 2;
+    const corners = [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]]
+      .map(([x, y]) => [x * cos - y * sin, cy + x * sin + y * cos]);
+    // clip the rotated rectangle to 0..H and take the x range of what is left
+    let minX = Infinity, maxX = -Infinity;
+    for (let k = 0; k < 4; k++) {
+      const [x1, y1] = corners[k], [x2, y2] = corners[(k + 1) % 4];
+      for (const [x, y] of [[x1, y1], [x2, y2]]) if (y >= 0 && y <= H) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); }
+      for (const yc of [0, H]) if ((y1 - yc) * (y2 - yc) < 0) { const x = x1 + (x2 - x1) * (yc - y1) / (y2 - y1); minX = Math.min(minX, x); maxX = Math.max(maxX, x); }
+    }
+    return { minX, maxX, cy, bh };
+  };
+  let sFrac = t.s, w, h, e;
+  for (;;) {
+    const dw = Math.round(W * sFrac), rim = Math.round(dw * SPEC.rim);
+    w = dw; h = Math.round((dw - 2 * rim) * SPEC.sh / SPEC.sw) + 2 * rim;
+    e = extent(w, h);
+    if (e.maxX - e.minX <= W - 2 * margin || sFrac < 0.4) break;
+    sFrac -= 0.01;
+  }
+  const { d } = phone(screen, w);
+  let cx = t.cx * W;
+  cx = Math.min(cx, W - margin - e.maxX);
+  cx = Math.max(cx, margin - e.minX);
+  cx += i * W;
+  Object.assign(d.style, { left: cx - w / 2 + "px", top: e.cy - h / 2 + "px", transform: `rotate(${t.rot}deg)` });
+  if (sFrac !== t.s) console.warn(`panel ${i + 1}: phone shrunk ${t.s} -> ${sFrac.toFixed(2)} to stay inside the cut`);
+  const tl = [cx + (-w / 2) * cos - (-h / 2) * sin, e.cy + (-w / 2) * sin + (-h / 2) * cos];
+  const tr = [cx + (w / 2) * cos - (-h / 2) * sin, e.cy + (w / 2) * sin + (-h / 2) * cos];
+  return { top: e.cy - e.bh / 2, bottom: e.cy + e.bh / 2, left: cx + e.minX, right: cx + e.maxX, topEdge: [tl, tr] };
+}
+
+const copies = [];
+COPY.forEach((c, i) => {
+  const p = panels[i];
+  if (SCREENS[i]) {
+    const box = el("div", "copy", p);
+    const capBottom = LAYOUT === "tilt" && TILTS[i].cap === "bottom";
+    const m = MASCOT[i];
+    const mw = m && m.at === "caption" ? Math.round(W * m.s * (CJK ? 0.8 : 1)) : 0;
+    Object.assign(box.style, { left: MX + "px", width: W - 2 * MX - (mw ? mw + Math.round(W * (CJK ? 0.05 : 0.03)) : 0) + "px" });
+    box.style[capBottom ? "bottom" : "top"] = copyTop + "px";
+    if (mw) Object.assign(mascotImg(p, m, mw).style, { right: MX + "px", bottom: copyTop - Math.round(mw * 0.06) + "px" });
+    const h = el("h1", "hl", box);
+    h.innerHTML = rich(c.h);
+    h.style.fontSize = HL + "px";
+    if (c.s) {
+      const s = el("p", "sub", box);
+      s.innerHTML = lines(c.s);
+      s.style.fontSize = SUB + "px";
+      s.style.marginTop = Math.round(W * 0.03) + "px";
+    }
+    const bb = device(i, SCREENS[i]);
+    copies.push({ i, box, h, s: box.querySelector(".sub"), bb, capBottom, panel: p, m });
+  } else {
+    // Closing panel: the mascot (or the app icon), ringed by the end of the thread, the
+    // closing line and the fine print.
+    const m = MASCOT[i];
+    const iconSize = Math.round(W * (m ? m.s : (DEVICE === "android" ? 0.30 : 0.29)));
+    const cy = Math.round(H * (DEVICE === "android" ? 0.33 : 0.34));
+    let icon;
+    if (m) {
+      icon = mascotImg(p, m, iconSize);
+      icon.style.filter = "none";
+    } else {
+      icon = el("img", "", p);
+      icon.src = CONFIG.icon;
+      Object.assign(icon.style, { width: iconSize + "px", height: iconSize + "px", borderRadius: iconSize * 0.225 + "px",
+        boxShadow: `0 ${W * .03}px ${W * .07}px rgba(74,46,28,.22)` });
+    }
+    icon.classList.add("icon");
+    Object.assign(icon.style, { left: (W - iconSize) / 2 + "px", top: cy - iconSize / 2 + "px" });
+    const box = el("div", "copy", p);
+    Object.assign(box.style, { left: MX + "px", width: W - 2 * MX + "px", textAlign: "center" });
+    const h = el("h1", "hl", box);
+    h.innerHTML = rich(c.h);
+    h.style.fontSize = Math.round(HL * 1.12) + "px";
+    const s = el("p", "sub", box);
+    s.innerHTML = lines(c.s);
+    s.style.fontSize = SUB + "px";
+    s.style.marginTop = Math.round(W * 0.035) + "px";
+    const ringR = iconSize * 0.5 * (m ? 1.22 : 1.42);
+    const f = el("p", "fine", p);
+    f.textContent = c.f;
+    Object.assign(f.style, { left: MX + "px", width: W - 2 * MX + "px", fontSize: Math.max(34, Math.round(W * 0.028)) + "px", bottom: Math.round(H * 0.055) + "px" });
+    copies.push({ i, box, h, s, icon, iconSize, end: { cx: i * W + W / 2, cy, ringR } });
+  }
+});
+
+// Shrink a headline (then its subline) until the copy ends above the thread's lane.
+function fit() {
+  for (const c of copies) {
+    if (c.end) {
+      // icon + ring, then the copy, as one group centred at 46% of the height
+      const gap = W * 0.10, ring = c.end.ringR;
+      const group = 2 * ring + gap + c.box.offsetHeight;
+      const top = H * 0.46 - group / 2;
+      c.end.cy = Math.round(top + ring);
+      c.icon.style.top = c.end.cy - c.iconSize / 2 + "px";
+      c.box.style.top = Math.round(top + 2 * ring + gap) + "px";
+      continue;
+    }
+    // top captions leave a lane for the thread above the phone; bottom captions sit under it
+    const limit = c.capBottom ? H - copyTop - c.bb.bottom - Math.round(W * 0.06)
+                              : c.bb.top - Math.round(W * 0.15) - copyTop;
+    const lh = () => parseFloat(getComputedStyle(c.h).lineHeight);
+    let size = HL;
+    while ((c.box.offsetHeight > limit || c.h.offsetHeight > lh() * 3 + 2) && size > HL * 0.7) {
+      size -= 2; c.h.style.fontSize = size + "px";
+    }
+    if (c.box.offsetHeight > limit) console.error(`panel ${c.i + 1}: copy does not fit (${c.box.offsetHeight} > ${limit})`);
+  }
+}
+
+// ---------------------------------------------------------------- the thread
+// One line from the left edge of panel 1 to a ring on panel 6. It runs in the lane between
+// the captions and the phones: a loose tangle of a few loops of different sizes on panel 1,
+// loops that open out on panel 2, waves, then a straight run, so the set reads as one thing
+// being untangled. One flat stroke, no shading.
+function thread() {
+  const svg = $("#thread");
+  svg.setAttribute("width", W * N); svg.setAttribute("height", H);
+  const smooth = (t) => t * t * (3 - 2 * t);
+  const laneOf = (i) => {
+    const c = copies[i];
+    if (c.end) return c.end.cy;
+    if (c.capBottom) return null; // the phone fills the top: the thread runs behind it
+    const bottom = copyTop + c.box.offsetHeight;
+    // nearer the phone than the words: the loops may slip behind the phone, never into the copy
+    return i === 0 ? c.bb.top - W * 0.035 : bottom + (c.bb.top - bottom) * 0.62;
+  };
+  const lane = (i) => {
+    const y = laneOf(i);
+    if (y !== null) return y;
+    const prev = laneOf(i - 1), next = laneOf(i + 1);
+    return prev === null ? next : next === null ? prev : (prev + next) / 2;
+  };
+  const laneAt = (x) => {
+    const f = x / W - 0.5;
+    const i = Math.max(0, Math.min(N - 2, Math.floor(f)));
+    const t = Math.max(0, Math.min(1, f - i));
+    return lane(i) + (lane(i + 1) - lane(i)) * smooth(t);
+  };
+  const end = copies[N - 1].end;
+
+  // One entry per loop: radius (of W), advance per turn (of W), squash, tilt (deg), lift (of H).
+  // The first four overlap (advance < 2 radius): the knot. Then the advance outruns the radius.
+  const LOOPS = [
+    [0.130, 0.10, 1.00, -10, 0.000], [0.085, 0.05, 0.85, 14, 0.020], [0.150, 0.14, 1.10, -6, -0.015],
+    [0.075, 0.08, 0.90, 22, 0.012], [0.115, 0.20, 1.00, -12, -0.004], [0.090, 0.24, 0.95, 8, 0.005],
+    [0.070, 0.27, 1.00, -5, 0], [0.060, 0.31, 0.92, 6, 0], [0.050, 0.36, 1.00, 0, 0],
+    [0.040, 0.42, 0.95, 0, 0], [0.030, 0.50, 1.00, 0, 0],
+    [0.022, 0.58, 1.00, 0, 0], [0.014, 0.65, 1.00, 0, 0],
+    [0.008, 0.75, 1.00, 0, 0], [0.000, 0.80, 1.00, 0, 0],
+  ];
+  const pts = [];
+  let x0 = -W * 0.12;
+  const STEPS = 64;
+  for (let k = 0; k < LOOPS.length - 1; k++) {
+    const a = LOOPS[k], b = LOOPS[k + 1];
+    for (let n = 0; n < STEPS; n++) {
+      const t = n / STEPS, phi = t * Math.PI * 2;
+      const r = (a[0] + (b[0] - a[0]) * t) * W, e = a[2] + (b[2] - a[2]) * t;
+      const tilt = (a[3] + (b[3] - a[3]) * t) * Math.PI / 180, lift = (a[4] + (b[4] - a[4]) * smooth(t)) * H;
+      const cx = x0 + a[1] * W * t;
+      const dx = -r * Math.sin(phi), dy = r * e * Math.cos(phi);
+      pts.push([cx + dx * Math.cos(tilt) - dy * Math.sin(tilt), laneAt(cx) + lift + dx * Math.sin(tilt) + dy * Math.cos(tilt)]);
+    }
+    x0 += a[1] * W;
+  }
+  // straight run into the ring, then once around the closing mark
+  const last = pts[pts.length - 1];
+  const tx = end.cx - end.ringR;
+  for (let k = 1; k <= 60; k++) {
+    const t = k / 60, s = smooth(t);
+    pts.push([last[0] + (tx - last[0]) * t, last[1] + (end.cy - last[1]) * s]);
+  }
+  for (let a = Math.PI; a <= Math.PI * 3 + 0.35; a += 0.03) {
+    pts.push([end.cx + end.ringR * Math.cos(a), end.cy - end.ringR * Math.sin(a)]);
+  }
+
+  // One flat stroke: a Catmull-Rom curve through the points, one cubic per step.
+  const sw = Math.max(8, W * 0.0095);
+  let d = `M${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
+    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6];
+    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6];
+    d += `C${c1[0].toFixed(1)} ${c1[1].toFixed(1)} ${c2[0].toFixed(1)} ${c2[1].toFixed(1)} ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
+  }
+  svg.innerHTML = `<path d="${d}" fill="none" stroke="var(--thread)" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"/>`;
+}
+
+// The phones sit above the thread; the closing panel's ring is drawn over its background.
+function layer() {
+  $("#thread").style.zIndex = 1;
+  $("#devices").style.zIndex = 2;
+  panels.forEach((p) => { p.style.zIndex = 3; });
+  // the ring must wrap the closing mark, so panel 6 sits under the thread
+  panels[N - 1].style.zIndex = 0;
+}
+
+async function ready() {
+  const allText = COPY.map((c) => [c.h, c.s, c.f].filter(Boolean).join(" ")).join(" ").replace(/\*/g, "");
+  const serif = getComputedStyle(document.documentElement).getPropertyValue("--serif");
+  const sans = getComputedStyle(document.documentElement).getPropertyValue("--sans");
+  await Promise.all([`600 100px ${serif}`, `italic 600 100px ${serif}`, `600 40px ${sans}`]
+    .map((f) => document.fonts.load(f, allText)));
+  await document.fonts.ready;
+  fit();
+  for (const c of copies) {
+    if (!c.m || c.m.at !== "lane") continue;
+    // the phone's top edge is tilted: measure it under the mascot, not the bounding box
+    const [[x1, y1], [x2, y2]] = c.bb.topEdge;
+    const edgeY = (x) => x <= x1 ? y1 : x >= x2 ? y2 : y1 + (y2 - y1) * (x - x1) / (x2 - x1);
+    let size = Math.round(W * c.m.s);
+    const mx = c.i * W + W * c.m.x;
+    const gap = W * 0.012;
+    const laneBottom = copyTop + c.box.offsetHeight + gap;
+    const phoneTop = Math.min(edgeY(mx - size / 2), edgeY(mx + size / 2)) - gap;
+    size = Math.min(size, Math.round(phoneTop - laneBottom));
+    const top = Math.round(phoneTop - size);
+    Object.assign(mascotImg(c.panel, c.m, size).style, { left: Math.round(W * c.m.x - size / 2) + "px", top: top + "px" });
+  }
+  if (CONFIG.thread !== false) thread();
+  layer();
+  await Promise.all([...document.images].map((i) => i.complete ? null : new Promise((r) => { i.onload = i.onerror = r; })));
+  const broken = [...document.images].filter((i) => !i.naturalWidth).map((i) => i.src);
+  if (broken.length) console.error("missing images: " + broken.join(", "));
+  if (Q.has("fit")) {
+    const s = Math.min(innerWidth / (W * N), innerHeight / H);
+    strip.style.transform = `scale(${s})`;
+  }
+  document.body.dataset.ready = "1";
+}
+ready();
+</script>
+</body>
+</html>
